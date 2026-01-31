@@ -13,7 +13,7 @@
 constexpr uint8_t PIN_I2C_SDA = 8;
 constexpr uint8_t PIN_I2C_SCL = 9;
 
-SensirionI2CSht4x sht4x;
+SensirionI2cSht4x sht4x;
 
 void setup() {
   Serial.begin(115200);
@@ -24,7 +24,7 @@ void setup() {
   Serial.println("Sensirion SHT40 Temperature/Humidity Example (ESP32-S3)");
 
   Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  sht4x.begin(Wire);
+  sht4x.begin(Wire, 0x44);
 
   uint16_t error = sht4x.softReset();
   if (error) {
