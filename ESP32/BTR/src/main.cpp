@@ -9,20 +9,15 @@ CRGB leds[NUM_LEDS];
 
 void setup() {
   // put your setup code here, to run once:
+  // pinMode(DATA_PIN, OUTPUT);
   FastLED.addLeds<WS2812, DATA_PIN, GRB>(leds, NUM_LEDS);
+  leds[0] = CRGB::Red;
+  FastLED.show();
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  leds[0] = CRGB::Red;
-  FastLED.show();
-  delay(1000);
-  leds[0] = CRGB::Green;
-  FastLED.show();
-  delay(1000);
-  leds[0] = CRGB::Blue;
-  FastLED.show();
-  delay(1000);
+  
 }
 
 // put function definitions here:
