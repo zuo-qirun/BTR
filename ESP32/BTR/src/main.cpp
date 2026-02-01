@@ -5,7 +5,7 @@
 #include <Adafruit_SSD1306.h>
 #include <SensirionI2CSht4x.h>
 #include <SensirionI2CSgp41.h>
-#include <SparkFun_MAX3010x.h>
+#include <MAX30105.h>
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <Wire.h>
@@ -46,11 +46,11 @@ constexpr uint8_t kHistoryLength = 20;      // 10s * 2Hz
 
 // ====== MQTT 配置 ======
 // MQTT 服务器：bemfa.com:9501，发布 topic 为 sensor，订阅 topic 为 statue。
-constexpr char kWifiSsid[] = "YOUR_WIFI_SSID";
-constexpr char kWifiPassword[] = "YOUR_WIFI_PASSWORD";
+constexpr char kWifiSsid[] = "blackmi";
+constexpr char kWifiPassword[] = "wxy358800";
 constexpr char kMqttHost[] = "bemfa.com";
 constexpr uint16_t kMqttPort = 9501;
-constexpr char kMqttPrivateKey[] = "YOUR_PRIVATE_KEY";
+constexpr char kMqttPrivateKey[] = "84810b9b5f5245fdbc1e1738837f27a9";
 constexpr char kMqttPubTopic[] = "sensor";
 constexpr char kMqttSubTopic[] = "statue"; // 按需求拼写
 
@@ -77,7 +77,7 @@ constexpr uint32_t kOverrideClearMs = 60000; // 本地正常持续 60s 清除远
 Adafruit_SSD1306 display(kScreenWidth, kScreenHeight, &Wire, kOledReset);
 Adafruit_NeoPixel pixels(kNeoPixelCount, kNeoPixelPin, NEO_GRB + NEO_KHZ800);
 Adafruit_MAX31865 rtd(kMax31865CsPin, kMax31865MosiPin, kMax31865MisoPin, kMax31865SckPin);
-SensirionI2CSht4x sht4x;
+SensirionI2cSht4x sht4x;
 SensirionI2CSgp41 sgp41;
 MAX30105 max30105;
 WiFiClient wifiClient;
@@ -494,7 +494,7 @@ void setup() {
   // MAX31865 配置为 3 线制 PT100。
   rtd.begin(MAX31865_3WIRE);
 
-  sht4x.begin(Wire);
+  sht4x.begin(Wire, 0x44);
   sgp41.begin(Wire);
   sht4x.startPeriodicMeasurement();
   sgp41.executeConditioning(0, 0);
