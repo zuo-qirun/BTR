@@ -394,6 +394,7 @@ void EnsureMqttConnected() {
   }
   while (!mqttClient.connected()) {
     String clientId = "esp32s3-" + String(random(0xffff), HEX);
+    Serial.print("Connecting to MQTT...");
     if (mqttClient.connect(kMqttPrivateKey, "", "")) {
       mqttClient.subscribe(kMqttSubTopic);
     } else {
