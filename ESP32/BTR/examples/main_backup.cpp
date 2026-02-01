@@ -394,7 +394,7 @@ void EnsureMqttConnected() {
   }
   while (!mqttClient.connected()) {
     String clientId = "esp32s3-" + String(random(0xffff), HEX);
-    if (mqttClient.connect(kMqttPrivateKey, "", "")) {
+    if (mqttClient.connect(clientId.c_str(), kMqttPrivateKey, "")) {
       mqttClient.subscribe(kMqttSubTopic);
     } else {
       delay(1000);
