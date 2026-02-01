@@ -1,129 +1,483 @@
 #include <Arduino.h>
 #include <Adafruit_GFX.h>
+#include <Adafruit_MAX31865.h>
+#include <Adafruit_NeoPixel.h>
 #include <Adafruit_SSD1306.h>
 #include <SensirionI2CSht4x.h>
 #include <SensirionI2CSgp41.h>
+#include <MAX30105.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
 #include <Wire.h>
 
 namespace {
-constexpr uint8_t kButtonPin = 17;
+// ====== 引脚定义（请根据实际硬件连线调整） ======
+// 所有引脚在此集中管理，避免分散定义导致冲突或遗漏。
+// 实际接线可能因开发板不同而变化，请以硬件原理图为准。
+constexpr uint8_t kButtonPin = 17;          // 按键，高电平为按下
+constexpr uint8_t kBuzzerPin = 18;          // 有源蜂鸣器
+constexpr uint8_t kNeoPixelPin = 48;        // WS2812 RGB 灯
+constexpr uint8_t kNeoPixelCount = 1;
+
+// SPI for MAX31865 (RTD)
+// MAX31865 通过 SPI 与 ESP32S3 通信，读取 PT100/ PT1000 电阻并换算温度。
+constexpr uint8_t kMax31865CsPin = 10;
+constexpr uint8_t kMax31865MosiPin = 11;
+constexpr uint8_t kMax31865MisoPin = 13;
+constexpr uint8_t kMax31865SckPin = 12;
+
+// MQ 气体传感器模拟输入引脚
+// MQ 传感器输出模拟电压，这里使用 ADC 读取后做简化线性换算。
+constexpr uint8_t kMq2Pin = 1;
+constexpr uint8_t kMq4Pin = 2;
+constexpr uint8_t kMq8Pin = 3;
+constexpr uint8_t kMq7Pin = 4;
+
+// OLED
+// SSD1306 128x64 OLED，I2C 地址默认 0x3C。
 constexpr uint8_t kScreenWidth = 128;
 constexpr uint8_t kScreenHeight = 64;
 constexpr uint8_t kOledReset = 255; // no reset pin
-constexpr uint8_t kSamplesPerMinute = 60;
-constexpr uint32_t kSampleIntervalMs = 1000;
-constexpr uint32_t kGraphDurationMs = 60000;
+
+// ====== 采样与记录 ======
+// 2Hz 采样与 10 秒历史缓冲，满足“每秒 2 次采样、记录 10 秒”的要求。
+constexpr uint32_t kSampleIntervalMs = 500; // 2Hz
+constexpr uint8_t kHistoryLength = 20;      // 10s * 2Hz
+
+// ====== MQTT 配置 ======
+// MQTT 服务器：bemfa.com:9501，发布 topic 为 sensor，订阅 topic 为 statue。
+constexpr char kWifiSsid[] = "YOUR_WIFI_SSID";
+constexpr char kWifiPassword[] = "YOUR_WIFI_PASSWORD";
+constexpr char kMqttHost[] = "bemfa.com";
+constexpr uint16_t kMqttPort = 9501;
+constexpr char kMqttPrivateKey[] = "YOUR_PRIVATE_KEY";
+constexpr char kMqttPubTopic[] = "sensor";
+constexpr char kMqttSubTopic[] = "statue"; // 按需求拼写
+
+// ====== 阈值（常量） ======
+// 阈值使用常量定义，便于统一修改。
+constexpr float kTempAmbientWarnC = 35.0f;
+constexpr float kTempInternalWarnC = 50.0f;
+constexpr float kHumidityWarnPercent = 80.0f;
+constexpr float kMq2WarnPpm = 300.0f;
+constexpr float kMq4WarnPpm = 300.0f;
+constexpr float kMq8WarnPpm = 300.0f;
+constexpr float kMq7WarnPpm = 300.0f;
+constexpr float kVocIndexWarn = 200.0f;
+
+// MQ 传感器转换比例（简化线性换算）
+// 未做标定曲线时，先用 0~4095 ADC 映射到 0~maxPpm。
+constexpr float kMq2MaxPpm = 1000.0f;
+constexpr float kMq4MaxPpm = 1000.0f;
+constexpr float kMq8MaxPpm = 1000.0f;
+constexpr float kMq7MaxPpm = 1000.0f;
+
+constexpr uint32_t kOverrideClearMs = 60000; // 本地正常持续 60s 清除远程覆盖
 
 Adafruit_SSD1306 display(kScreenWidth, kScreenHeight, &Wire, kOledReset);
+Adafruit_NeoPixel pixels(kNeoPixelCount, kNeoPixelPin, NEO_GRB + NEO_KHZ800);
+Adafruit_MAX31865 rtd(kMax31865CsPin, kMax31865MosiPin, kMax31865MisoPin, kMax31865SckPin);
 SensirionI2CSht4x sht4x;
 SensirionI2CSgp41 sgp41;
+MAX30105 max30105;
+WiFiClient wifiClient;
+PubSubClient mqttClient(wifiClient);
 
-float tempHistory[kSamplesPerMinute] = {};
-float humidityHistory[kSamplesPerMinute] = {};
+// 传感器历史记录结构，用于保存 10 秒内的采样快照与时间戳。
+struct SensorSample {
+  uint32_t timestampMs;
+  float tempAmbientC;
+  float tempInternalC;
+  float humidityPercent;
+  float mq2Ppm;
+  float mq4Ppm;
+  float mq8Ppm;
+  float mq7Ppm;
+  float vocIndex;
+  uint32_t max30105Ir;
+};
+
+SensorSample history[kHistoryLength] = {};
 uint8_t historyIndex = 0;
 uint8_t historyCount = 0;
-bool buttonLatched = false;
-uint32_t lastSampleMs = 0;
-uint32_t graphStartMs = 0;
-} // namespace
 
-void UpdateHistory(float temperature, float humidity) {
-  tempHistory[historyIndex] = temperature;
-  humidityHistory[historyIndex] = humidity;
-  historyIndex = (historyIndex + 1) % kSamplesPerMinute;
-  if (historyCount < kSamplesPerMinute) {
+uint32_t lastSampleMs = 0;
+uint32_t lastMqttMs = 0;
+uint32_t lastDisplayMs = 0;
+uint32_t lastBuzzerToggleMs = 0;
+
+uint8_t screenIndex = 0;
+bool buttonLatched = false;
+
+enum class StatusLevel { kNormal, kWarning, kDanger };
+StatusLevel localStatus = StatusLevel::kNormal;
+StatusLevel effectiveStatus = StatusLevel::kNormal;
+bool overrideActive = false;
+StatusLevel overrideStatus = StatusLevel::kNormal;
+uint32_t localNormalStartMs = 0;
+
+float lastTempAmbientC = 0.0f;
+float lastTempInternalC = 0.0f;
+float lastHumidityPercent = 0.0f;
+float lastMq2Ppm = 0.0f;
+float lastMq4Ppm = 0.0f;
+float lastMq8Ppm = 0.0f;
+float lastMq7Ppm = 0.0f;
+float lastVocIndex = 0.0f;
+uint32_t lastMax30105Ir = 0;
+
+// MQ 传感器 ADC 读数转换为 ppm（简化线性模型）。
+float ConvertMqToPpm(int adc, float maxPpm) {
+  float ratio = static_cast<float>(adc) / 4095.0f;
+  return ratio * maxPpm;
+}
+
+// 统计超过阈值的传感器数量，以划分正常/可疑/紧急三种情况。
+StatusLevel EvaluateStatus() {
+  int exceedCount = 0;
+  if (lastTempAmbientC > kTempAmbientWarnC) {
+    exceedCount++;
+  }
+  if (lastTempInternalC > kTempInternalWarnC) {
+    exceedCount++;
+  }
+  if (lastHumidityPercent > kHumidityWarnPercent) {
+    exceedCount++;
+  }
+  if (lastMq2Ppm > kMq2WarnPpm) {
+    exceedCount++;
+  }
+  if (lastMq4Ppm > kMq4WarnPpm) {
+    exceedCount++;
+  }
+  if (lastMq8Ppm > kMq8WarnPpm) {
+    exceedCount++;
+  }
+  if (lastMq7Ppm > kMq7WarnPpm) {
+    exceedCount++;
+  }
+  if (lastVocIndex > kVocIndexWarn) {
+    exceedCount++;
+  }
+
+  if (exceedCount == 0) {
+    return StatusLevel::kNormal;
+  }
+  if (exceedCount <= 2) {
+    return StatusLevel::kWarning;
+  }
+  return StatusLevel::kDanger;
+}
+
+// OLED 不支持中文字体，因此状态文本保持 ASCII。
+const char *StatusToString(StatusLevel status) {
+  switch (status) {
+    case StatusLevel::kNormal:
+      return "NORMAL";
+    case StatusLevel::kWarning:
+      return "WARNING";
+    case StatusLevel::kDanger:
+      return "DANGER";
+    default:
+      return "UNKNOWN";
+  }
+}
+
+// 处理本地计算状态与远程覆盖状态的优先级。
+// 当远程覆盖生效后，只有连续 60 秒本地正常才会解除覆盖。
+void UpdateStatusLogic(uint32_t nowMs) {
+  localStatus = EvaluateStatus();
+  if (overrideActive) {
+    if (localStatus == StatusLevel::kNormal) {
+      if (localNormalStartMs == 0) {
+        localNormalStartMs = nowMs;
+      } else if (nowMs - localNormalStartMs >= kOverrideClearMs) {
+        overrideActive = false;
+        localNormalStartMs = 0;
+      }
+    } else {
+      localNormalStartMs = 0;
+    }
+  }
+
+  if (overrideActive) {
+    effectiveStatus = overrideStatus;
+  } else {
+    effectiveStatus = localStatus;
+  }
+}
+
+// WS2812 RGB 灯显示状态：正常绿、可疑黄、紧急红。
+void UpdateNeoPixel(StatusLevel status) {
+  uint32_t color = 0;
+  switch (status) {
+    case StatusLevel::kNormal:
+      color = pixels.Color(0, 200, 0);
+      break;
+    case StatusLevel::kWarning:
+      color = pixels.Color(200, 200, 0);
+      break;
+    case StatusLevel::kDanger:
+      color = pixels.Color(200, 0, 0);
+      break;
+  }
+  pixels.setPixelColor(0, color);
+  pixels.show();
+}
+
+// 紧急状态蜂鸣器快速鸣叫，其余状态关闭。
+// 通过 100ms 翻转输出形成快速提示音。
+void UpdateBuzzer(uint32_t nowMs) {
+  if (effectiveStatus != StatusLevel::kDanger) {
+    digitalWrite(kBuzzerPin, LOW);
+    lastBuzzerToggleMs = nowMs;
+    return;
+  }
+
+  if (nowMs - lastBuzzerToggleMs >= 100) {
+    lastBuzzerToggleMs = nowMs;
+    digitalWrite(kBuzzerPin, !digitalRead(kBuzzerPin));
+  }
+}
+
+// 将当前采样写入环形缓冲区（10 秒历史）。
+void PushHistory(uint32_t nowMs) {
+  SensorSample &sample = history[historyIndex];
+  sample.timestampMs = nowMs;
+  sample.tempAmbientC = lastTempAmbientC;
+  sample.tempInternalC = lastTempInternalC;
+  sample.humidityPercent = lastHumidityPercent;
+  sample.mq2Ppm = lastMq2Ppm;
+  sample.mq4Ppm = lastMq4Ppm;
+  sample.mq8Ppm = lastMq8Ppm;
+  sample.mq7Ppm = lastMq7Ppm;
+  sample.vocIndex = lastVocIndex;
+  sample.max30105Ir = lastMax30105Ir;
+
+  historyIndex = (historyIndex + 1) % kHistoryLength;
+  if (historyCount < kHistoryLength) {
     historyCount++;
   }
 }
 
-void DrawLiveScreen(float temperature, float humidity, uint16_t vocRaw) {
+// OLED 界面 1：显示整体状态与是否被远程覆盖。
+void DrawStatusScreen() {
   display.clearDisplay();
+  display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
-  display.setTextSize(1);
   display.setCursor(0, 0);
-  display.println("SHT4x + SGP41");
+  display.println("Status");
   display.setTextSize(2);
-  display.setCursor(0, 16);
-  display.print("T ");
-  display.print(temperature, 1);
-  display.println("C");
-  display.setCursor(0, 36);
-  display.print("H ");
-  display.print(humidity, 1);
-  display.println("%");
+  display.setCursor(0, 20);
+  display.println(StatusToString(effectiveStatus));
   display.setTextSize(1);
-  display.setCursor(0, 56);
-  display.print("VOC raw ");
-  display.print(vocRaw);
+  display.setCursor(0, 50);
+  display.print("Local: ");
+  display.println(StatusToString(localStatus));
+  if (overrideActive) {
+    display.setCursor(64, 50);
+    display.print("Override");
+  }
   display.display();
 }
 
-void DrawGraphScreen() {
+// OLED 界面 2：显示环境/内部温度与湿度。
+void DrawTemperatureScreen() {
   display.clearDisplay();
-  display.setTextColor(SSD1306_WHITE);
   display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println("Last 60s");
+  display.println("Temp/Humidity");
+  display.setCursor(0, 16);
+  display.print("Ambient: ");
+  display.print(lastTempAmbientC, 1);
+  display.println("C");
+  display.setCursor(0, 30);
+  display.print("Internal: ");
+  display.print(lastTempInternalC, 1);
+  display.println("C");
+  display.setCursor(0, 44);
+  display.print("Humidity: ");
+  display.print(lastHumidityPercent, 1);
+  display.println("%");
+  display.display();
+}
 
-  if (historyCount == 0) {
-    display.setCursor(0, 20);
-    display.println("No data");
-    display.display();
+// OLED 界面 3：显示 MQ 气体浓度（ppm）。
+void DrawGasScreen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("Gas (ppm)");
+  display.setCursor(0, 14);
+  display.print("MQ-2  (Fuel): ");
+  display.println(lastMq2Ppm, 0);
+  display.setCursor(0, 28);
+  display.print("MQ-4  (CH4): ");
+  display.println(lastMq4Ppm, 0);
+  display.setCursor(0, 42);
+  display.print("MQ-8  (H2): ");
+  display.println(lastMq8Ppm, 0);
+  display.setCursor(0, 56);
+  display.print("MQ-7  (CO): ");
+  display.println(lastMq7Ppm, 0);
+  display.display();
+}
+
+// OLED 界面 4：显示 VOC 指数和 MAX30105 IR 原始值。
+void DrawVocScreen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("VOC Index");
+  display.setTextSize(2);
+  display.setCursor(0, 20);
+  display.print(lastVocIndex, 0);
+  display.setTextSize(1);
+  display.setCursor(0, 50);
+  display.print("MAX30105 IR: ");
+  display.print(lastMax30105Ir);
+  display.display();
+}
+
+// 根据当前页索引刷新 OLED。
+void UpdateDisplay() {
+  switch (screenIndex) {
+    case 0:
+      DrawStatusScreen();
+      break;
+    case 1:
+      DrawTemperatureScreen();
+      break;
+    case 2:
+      DrawGasScreen();
+      break;
+    case 3:
+    default:
+      DrawVocScreen();
+      break;
+  }
+}
+
+// MQTT 订阅回调：接收 normal/warning/danger 覆盖指令。
+void OnMqttMessage(char *topic, byte *payload, unsigned int length) {
+  String message;
+  message.reserve(length);
+  for (unsigned int i = 0; i < length; ++i) {
+    message += static_cast<char>(payload[i]);
+  }
+  message.trim();
+
+  if (String(topic) == kMqttSubTopic) {
+    if (message == "normal") {
+      overrideStatus = StatusLevel::kNormal;
+      overrideActive = true;
+      localNormalStartMs = 0;
+    } else if (message == "warning") {
+      overrideStatus = StatusLevel::kWarning;
+      overrideActive = true;
+      localNormalStartMs = 0;
+    } else if (message == "danger") {
+      overrideStatus = StatusLevel::kDanger;
+      overrideActive = true;
+      localNormalStartMs = 0;
+    }
+  }
+}
+
+// 断线重连并保持订阅主题。
+void EnsureMqttConnected() {
+  if (mqttClient.connected()) {
     return;
   }
-
-  float tempMin = tempHistory[0];
-  float tempMax = tempHistory[0];
-  float humMin = humidityHistory[0];
-  float humMax = humidityHistory[0];
-  for (uint8_t i = 1; i < historyCount; ++i) {
-    tempMin = min(tempMin, tempHistory[i]);
-    tempMax = max(tempMax, tempHistory[i]);
-    humMin = min(humMin, humidityHistory[i]);
-    humMax = max(humMax, humidityHistory[i]);
+  while (!mqttClient.connected()) {
+    String clientId = "esp32s3-" + String(random(0xffff), HEX);
+    if (mqttClient.connect(clientId.c_str(), kMqttPrivateKey, "")) {
+      mqttClient.subscribe(kMqttSubTopic);
+    } else {
+      delay(1000);
+    }
   }
-  if (tempMax - tempMin < 0.5f) {
-    tempMax = tempMin + 0.5f;
-  }
-  if (humMax - humMin < 1.0f) {
-    humMax = humMin + 1.0f;
-  }
-
-  const int graphTop = 12;
-  const int graphBottom = 63;
-  const int graphHeight = graphBottom - graphTop;
-  const int graphWidth = 127;
-
-  for (uint8_t i = 0; i < historyCount; ++i) {
-    uint8_t index = (historyIndex + kSamplesPerMinute - historyCount + i) % kSamplesPerMinute;
-    float tempValue = tempHistory[index];
-    float humValue = humidityHistory[index];
-    int x = map(i, 0, kSamplesPerMinute - 1, 0, graphWidth);
-    int tempY = graphBottom - (int)((tempValue - tempMin) / (tempMax - tempMin) * graphHeight);
-    int humY = graphBottom - (int)((humValue - humMin) / (humMax - humMin) * graphHeight);
-    display.drawPixel(x, tempY, SSD1306_WHITE);
-    display.drawPixel(x, humY, SSD1306_WHITE);
-  }
-
-  display.setTextSize(1);
-  display.setCursor(0, 56);
-  display.print("T:");
-  display.print(tempMin, 1);
-  display.print("-");
-  display.print(tempMax, 1);
-  display.setCursor(64, 56);
-  display.print("H:");
-  display.print(humMin, 0);
-  display.print("-");
-  display.print(humMax, 0);
-  display.display();
 }
 
+// 发布传感器数据与时间戳到 MQTT。
+void PublishMqtt(uint32_t nowMs) {
+  if (!mqttClient.connected()) {
+    return;
+  }
+  if (nowMs - lastMqttMs < kSampleIntervalMs) {
+    return;
+  }
+  lastMqttMs = nowMs;
+
+  String payload = String("{");
+  payload += "\"timestamp_ms\":" + String(nowMs) + ",";
+  payload += "\"temp_ambient_c\":" + String(lastTempAmbientC, 2) + ",";
+  payload += "\"temp_internal_c\":" + String(lastTempInternalC, 2) + ",";
+  payload += "\"humidity_percent\":" + String(lastHumidityPercent, 2) + ",";
+  payload += "\"mq2_ppm\":" + String(lastMq2Ppm, 1) + ",";
+  payload += "\"mq4_ppm\":" + String(lastMq4Ppm, 1) + ",";
+  payload += "\"mq8_ppm\":" + String(lastMq8Ppm, 1) + ",";
+  payload += "\"mq7_ppm\":" + String(lastMq7Ppm, 1) + ",";
+  payload += "\"voc_index\":" + String(lastVocIndex, 1) + ",";
+  payload += "\"max30105_ir\":" + String(lastMax30105Ir) + ",";
+  payload += "\"status\":\"" + String(StatusToString(effectiveStatus)) + "\"";
+  payload += "}";
+
+  mqttClient.publish(kMqttPubTopic, payload.c_str());
+}
+
+// 读取所有传感器并转换为工程单位（°C、%、ppm）。
+// MQ 传感器未标定时使用简化线性换算。
+void ReadSensors(uint32_t nowMs) {
+  float ambientTemp = 0.0f;
+  float humidity = 0.0f;
+  uint16_t shtError = sht4x.readMeasurement(ambientTemp, humidity);
+  if (shtError) {
+    Serial.print("SHT4x error: ");
+    Serial.println(shtError);
+  } else {
+    lastTempAmbientC = ambientTemp;
+    lastHumidityPercent = humidity;
+  }
+
+  // MAX31865 读取 PT100 温度，参考电阻 430Ω（需与硬件一致）。
+  lastTempInternalC = rtd.temperature(100.0f, 430.0f);
+
+  uint16_t vocRaw = 0;
+  uint16_t noxIndex = 0;
+  uint16_t sgpError = sgp41.measureRawSignals(0, 0, vocRaw, noxIndex);
+  if (sgpError) {
+    Serial.print("SGP41 error: ");
+    Serial.println(sgpError);
+  }
+  // 简化转换：将原始值映射到 0-500 VOC 指数。
+  lastVocIndex = map(vocRaw, 0, 65535, 0, 500);
+
+  lastMq2Ppm = ConvertMqToPpm(analogRead(kMq2Pin), kMq2MaxPpm);
+  lastMq4Ppm = ConvertMqToPpm(analogRead(kMq4Pin), kMq4MaxPpm);
+  lastMq8Ppm = ConvertMqToPpm(analogRead(kMq8Pin), kMq8MaxPpm);
+  lastMq7Ppm = ConvertMqToPpm(analogRead(kMq7Pin), kMq7MaxPpm);
+
+  lastMax30105Ir = max30105.getIR();
+
+  PushHistory(nowMs);
+}
+
+// 初始化硬件、网络和显示。
 void setup() {
   Serial.begin(115200);
-  pinMode(kButtonPin, INPUT_PULLUP);
+  pinMode(kButtonPin, INPUT_PULLDOWN);
+  pinMode(kBuzzerPin, OUTPUT);
+  digitalWrite(kBuzzerPin, LOW);
+
+  analogReadResolution(12);
+
   Wire.begin();
 
+  // 初始化 OLED 屏幕（SSD1306）。
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
     Serial.println("SSD1306 init failed");
     while (true) {
@@ -133,67 +487,72 @@ void setup() {
   display.clearDisplay();
   display.display();
 
+  pixels.begin();
+  pixels.clear();
+  pixels.show();
+
+  // MAX31865 配置为 3 线制 PT100。
+  rtd.begin(MAX31865_3WIRE);
+
   sht4x.begin(Wire);
   sgp41.begin(Wire);
+  sht4x.startPeriodicMeasurement();
+  sgp41.executeConditioning(0, 0);
 
-  uint16_t error = sht4x.stopPeriodicMeasurement();
-  if (error) {
-    Serial.print("SHT4x stop periodic error: ");
-    Serial.println(error);
-  }
-  delay(500);
-  error = sht4x.startPeriodicMeasurement();
-  if (error) {
-    Serial.print("SHT4x start periodic error: ");
-    Serial.println(error);
+  // MAX30105 初始化失败时仍可继续运行，但 IR 数据无效。
+  if (!max30105.begin(Wire, I2C_SPEED_FAST)) {
+    Serial.println("MAX30105 init failed");
+  } else {
+    max30105.setup();
   }
 
-  uint16_t vocIndex = 0;
-  uint16_t noxIndex = 0;
-  error = sgp41.executeConditioning(vocIndex, noxIndex);
-  if (error) {
-    Serial.print("SGP41 conditioning error: ");
-    Serial.println(error);
+  // 连接 Wi-Fi（阻塞式等待连接成功）。
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(kWifiSsid, kWifiPassword);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
   }
+
+  // MQTT 配置并连接。
+  mqttClient.setServer(kMqttHost, kMqttPort);
+  mqttClient.setCallback(OnMqttMessage);
+  EnsureMqttConnected();
+
+  UpdateDisplay();
 }
 
+// 主循环：采样、状态计算、显示、MQTT 与蜂鸣器控制。
 void loop() {
-  const uint32_t now = millis();
-  if (now - lastSampleMs >= kSampleIntervalMs) {
-    lastSampleMs = now;
+  const uint32_t nowMs = millis();
+  mqttClient.loop();
 
-    float temperature = 0.0f;
-    float humidity = 0.0f;
-    uint16_t error = sht4x.readMeasurement(temperature, humidity);
-    if (error) {
-      Serial.print("SHT4x read error: ");
-      Serial.println(error);
-    }
-
-    uint16_t vocRaw = 0;
-    uint16_t noxIndex = 0;
-    error = sgp41.measureRawSignals(0, 0, vocRaw, noxIndex);
-    if (error) {
-      Serial.print("SGP41 measure error: ");
-      Serial.println(error);
-    }
-
-    UpdateHistory(temperature, humidity);
-
-    if (graphStartMs != 0 && now - graphStartMs < kGraphDurationMs) {
-      DrawGraphScreen();
-    } else {
-      graphStartMs = 0;
-      DrawLiveScreen(temperature, humidity, vocRaw);
-    }
+  if (!mqttClient.connected()) {
+    EnsureMqttConnected();
   }
 
-  bool buttonPressed = digitalRead(kButtonPin) == LOW;
+  // 定时采样与上传。
+  if (nowMs - lastSampleMs >= kSampleIntervalMs) {
+    lastSampleMs = nowMs;
+    ReadSensors(nowMs);
+    UpdateStatusLogic(nowMs);
+    UpdateNeoPixel(effectiveStatus);
+    PublishMqtt(nowMs);
+  }
+
+  UpdateBuzzer(nowMs);
+
+  // 按键高电平触发页面切换。
+  bool buttonPressed = digitalRead(kButtonPin) == HIGH;
   if (buttonPressed && !buttonLatched) {
     buttonLatched = true;
-    graphStartMs = now;
-    DrawGraphScreen();
+    screenIndex = (screenIndex + 1) % 4;
+    UpdateDisplay();
   } else if (!buttonPressed) {
     buttonLatched = false;
+  }
+
+  if (nowMs - lastDisplayMs >= 500) {
+    lastDisplayMs = nowMs;
+    UpdateDisplay();
   }
 }
