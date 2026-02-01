@@ -4,10 +4,10 @@
 // Pin connections:
 //   49E VCC -> 3.3V
 //   49E GND -> GND
-//   49E OUT -> GPIO34 (ADC1_CH6)
-// Note: GPIO34 is input-only, suitable for analog read.
+//   49E OUT -> GPIO8 (ADC1_CH6)
+// Note: GPIO8 is input-only, suitable for analog read.
 
-constexpr int kHallPin = 34; // ADC1_CH6
+constexpr int kHallPin = 8; // ADC1_CH2
 constexpr uint32_t kBaudRate = 115200;
 
 void setup() {
@@ -16,7 +16,7 @@ void setup() {
   analogSetAttenuation(ADC_11db); // full-scale ~3.3V
 
   Serial.println("49E Hall sensor analog output example");
-  Serial.println("Connections: VCC->3.3V, GND->GND, OUT->GPIO34");
+  Serial.println("Connections: VCC->3.3V, GND->GND, OUT->GPIO8");
 }
 
 void loop() {

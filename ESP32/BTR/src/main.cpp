@@ -1,57 +1,33 @@
 #include <Arduino.h>
-#include <SensirionCore.h>
-#include <SensirionI2CSht4x.h>
-#include <Wire.h>
 
-// ESP32-S3 DevKitM-1 I2C pin mapping.
-// SHT40 -> ESP32-S3
-// SDA   -> GPIO8
-// SCL   -> GPIO9
-// 3V3   -> 3V3
-// GND   -> GND
+// 49E Hall sensor (linear analog) example for ESP32
+// Pin connections:
+//   49E VCC -> 3.3V
+//   49E GND -> GND
+//   49E OUT -> GPIO8 (ADC1_CH6)
+// Note: GPIO8 is input-only, suitable for analog read.
 
-constexpr uint8_t PIN_I2C_SDA = 8;
-constexpr uint8_t PIN_I2C_SCL = 9;
-
-SensirionI2cSht4x sht4x;
+constexpr int kHallPin = 8; // ADC1_CH2
+constexpr uint32_t kBaudRate = 115200;
 
 void setup() {
-  Serial.begin(115200);
-  while (!Serial) {
-    delay(10);
-  }
+  Serial.begin(kBaudRate);
+  analogReadResolution(12); // ESP32 default 12-bit
+  analogSetAttenuation(ADC_11db); // full-scale ~3.3V
 
-  Serial.println("Sensirion SHT40 Temperature/Humidity Example (ESP32-S3)");
-
-  Wire.begin(PIN_I2C_SDA, PIN_I2C_SCL);
-  sht4x.begin(Wire, 0x44);
-
-  uint16_t error = sht4x.softReset();
-  if (error) {
-    char errorMessage[256];
-    errorToString(error, errorMessage, sizeof(errorMessage));
-    Serial.print("SHT40 soft reset failed: ");
-    Serial.println(errorMessage);
-  }
+  Serial.println("49E Hall sensor analog output example");
+  Serial.println("Connections: VCC->3.3V, GND->GND, OUT->GPIO8");
 }
 
 void loop() {
-  float temperature = 0.0f;
-  float humidity = 0.0f;
-  uint16_t error = sht4x.measureHighPrecision(temperature, humidity);
+  int raw = analogRead(kHallPin);
+  float voltage = (raw / 4095.0f) * 3.3f;
 
-  if (error) {
-    char errorMessage[256];
-    errorToString(error, errorMessage, sizeof(errorMessage));
-    Serial.print("SHT40 read failed: ");
-    Serial.println(errorMessage);
-  } else {
-    Serial.print("Temperature: ");
-    Serial.print(temperature, 2);
-    Serial.print(" °C, Humidity: ");
-    Serial.print(humidity, 2);
-    Serial.println(" %RH");
-  }
+  Serial.print("Raw ADC: ");
+  Serial.print(raw);
+  Serial.print("\tVoltage: ");
+  Serial.print(voltage, 3);
+  Serial.println(" V");
 
-  delay(1000);
+  delay(500);
 }
