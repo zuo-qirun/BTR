@@ -3,7 +3,6 @@
 #include <Adafruit_MAX31865.h>
 #include <Adafruit_NeoPixel.h>
 #include <Adafruit_SSD1306.h>
-#include <SensirionCore.h>
 #include <SensirionI2CSht4x.h>
 #include <SensirionI2CSgp41.h>
 #include <MAX30105.h>
@@ -447,11 +446,9 @@ void ReadSensors(uint32_t nowMs) {
   // MAX31865 读取 PT100 温度，参考电阻 430Ω（需与硬件一致）。
   lastTempInternalC = rtd.temperature(100.0f, 430.0f);
 
-  uint16_t defaultRh = humidityToTicks(lastHumidityPercent);
-  uint16_t defaultT = temperatureToTicks(lastTempAmbientC);
   uint16_t vocRaw = 0;
   uint16_t noxIndex = 0;
-  uint16_t sgpError = sgp41.measureRaw(defaultRh, defaultT, vocRaw, noxIndex);
+  uint16_t sgpError = sgp41.measureRawSignals(0, 0, vocRaw, noxIndex);
   if (sgpError) {
     Serial.print("SGP41 error: ");
     Serial.println(sgpError);
@@ -499,10 +496,9 @@ void setup() {
 
   sht4x.begin(Wire, 0x44);
   sgp41.begin(Wire);
+  // sht4x.startPeriodicMeasurement();
   uint16_t conditioningVoc = 0;
-  uint16_t conditioningRh = humidityToTicks(50.0f);
-  uint16_t conditioningTemp = temperatureToTicks(25.0f);
-  sgp41.executeConditioning(conditioningRh, conditioningTemp, conditioningVoc);
+  sgp41.executeConditioning(0, 0, conditioningVoc);
 
   // MAX30105 初始化失败时仍可继续运行，但 IR 数据无效。
   if (!max30105.begin(Wire, I2C_SPEED_FAST)) {
