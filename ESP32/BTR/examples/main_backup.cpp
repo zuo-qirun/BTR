@@ -59,10 +59,10 @@ constexpr char kMqttSubTopic[] = "statue"; // 按需求拼写
 constexpr float kTempAmbientWarnC = 35.0f;
 constexpr float kTempInternalWarnC = 50.0f;
 constexpr float kHumidityWarnPercent = 80.0f;
-constexpr float kMq2WarnPpm = 300.0f;
-constexpr float kMq4WarnPpm = 300.0f;
-constexpr float kMq8WarnPpm = 300.0f;
-constexpr float kMq7WarnPpm = 300.0f;
+constexpr float kMq2WarnPpm = 100.0f;
+constexpr float kMq4WarnPpm = 100.0f;
+constexpr float kMq8WarnPpm = 200.0f;
+constexpr float kMq7WarnPpm = 500.0f;
 constexpr float kVocIndexWarn = 200.0f;
 
 // MQ 传感器转换比例（简化线性换算）
@@ -156,7 +156,7 @@ StatusLevel EvaluateStatus() {
   if (lastMq7Ppm > kMq7WarnPpm) {
     exceedCount++;
   }
-  if (lastVocIndex > kVocIndexWarn) {
+  if (lastVocIndex < kVocIndexWarn) {
     exceedCount++;
   }
 
@@ -229,7 +229,7 @@ void UpdateNeoPixel(StatusLevel status) {
 // 通过 100ms 翻转输出形成快速提示音。
 void UpdateBuzzer(uint32_t nowMs) {
   if (effectiveStatus != StatusLevel::kDanger) {
-    digitalWrite(kBuzzerPin, LOW);
+    digitalWrite(kBuzzerPin, HIGH);
     lastBuzzerToggleMs = nowMs;
     return;
   }
@@ -394,7 +394,8 @@ void EnsureMqttConnected() {
   }
   while (!mqttClient.connected()) {
     String clientId = "esp32s3-" + String(random(0xffff), HEX);
-    if (mqttClient.connect(clientId.c_str(), kMqttPrivateKey, "")) {
+    Serial.print("Connecting to MQTT...");
+    if (mqttClient.connect(kMqttPrivateKey, "", "")) {
       mqttClient.subscribe(kMqttSubTopic);
     } else {
       delay(1000);
@@ -498,7 +499,7 @@ void setup() {
   Serial.begin(115200);
   pinMode(kButtonPin, INPUT_PULLDOWN);
   pinMode(kBuzzerPin, OUTPUT);
-  digitalWrite(kBuzzerPin, LOW);
+  digitalWrite(kBuzzerPin, HIGH);
 
   analogReadResolution(12);
 
@@ -536,8 +537,10 @@ void setup() {
 
   // 连接 Wi-Fi（阻塞式等待连接成功）。
   WiFi.mode(WIFI_STA);
+  Serial.println("Connecting WiFi");
   WiFi.begin(kWifiSsid, kWifiPassword);
   while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
     delay(500);
   }
 

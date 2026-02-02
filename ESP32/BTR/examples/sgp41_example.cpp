@@ -89,7 +89,7 @@ void loop() {
     }
     sampleCount++;
   } else {
-    error = sgp41.measureRaw(defaultRh, defaultT, srawVoc, srawNox);
+    error = sgp41.measureRawSignals(defaultRh, defaultT, srawVoc, srawNox);
     if (error) {
       char errorMessage[256];
       errorToString(error, errorMessage, sizeof(errorMessage));
