@@ -537,8 +537,10 @@ void setup() {
 
   // 连接 Wi-Fi（阻塞式等待连接成功）。
   WiFi.mode(WIFI_STA);
+  Serial.println("Connecting WiFi");
   WiFi.begin(kWifiSsid, kWifiPassword);
   while (WiFi.status() != WL_CONNECTED) {
+    Serial.print(".");
     delay(500);
   }
 
