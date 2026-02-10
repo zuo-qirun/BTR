@@ -82,6 +82,19 @@ class BatteryThermalRunawayPredictor:
                 # 线性插值（正常文件从5秒插值到0.5秒，异常文件从0.02秒降采样到0.5秒）
                 uniform_temps = np.interp(uniform_times, time_values, temp_values)
                 
+                # 对异常文件：删除前面温度平稳的部分，只保留开始上升的部分
+                if is_exception:
+                    # 找到温度开始显著上升的位置（基线温度+5°C）
+                    baseline_temp = np.percentile(uniform_temps[:min(1000, len(uniform_temps))], 50)  # 前500秒的中位数作为基线
+                    threshold_temp = baseline_temp + 5.0  # 基线+5°C
+                    
+                    # 找到首次超过阈值的位置
+                    rising_indices = np.where(uniform_temps > threshold_temp)[0]
+                    if len(rising_indices) > 0:
+                        start_idx = max(0, rising_indices[0] - 200)  # 保留上升前100秒（200个点）的数据
+                        uniform_temps = uniform_temps[start_idx:]
+                        uniform_times = uniform_times[start_idx:]
+                
                 # 标记哪些插值点是不可靠的（原始数据间隔过大，如60秒）
                 valid_mask = np.ones(len(uniform_temps), dtype=bool)
                 if max_gap > MAX_GAP:
@@ -102,15 +115,19 @@ class BatteryThermalRunawayPredictor:
                 
                 # 对正常文件进行随机采样，减少数据量但保持多样性
                 if is_exception:
-                    # 异常文件：使用所有点（保留热失控细节）
+                    # 异常文件：使用所有点（已经删除了前面平稳部分）
                     sample_indices = range(max_sequences)
                 else:
-                    # 正常文件：随机采样10%的序列（减少数据量但保持连续性）
-                    sample_ratio = 0.1  # 采样10%
-                    num_samples = max(int(max_sequences * sample_ratio), 100)  # 至少100个样本
-                    num_samples = min(num_samples, max_sequences)
-                    sample_indices = np.random.choice(max_sequences, num_samples, replace=False)
-                    sample_indices = sorted(sample_indices)  # 排序以保持时间顺序
+                    # 正常文件：每个文件最多取2000个序列
+                    max_normal_samples = 2000
+                    num_samples = min(max_normal_samples, max_sequences)
+                    if max_sequences > max_normal_samples:
+                        # 随机采样
+                        sample_indices = np.random.choice(max_sequences, num_samples, replace=False)
+                        sample_indices = sorted(sample_indices)
+                    else:
+                        # 全部使用
+                        sample_indices = range(max_sequences)
                 
                 sample_count = 0
                 skipped_count = 0
