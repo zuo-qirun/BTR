@@ -1,13 +1,64 @@
 import json
+import os
+from collections import deque
+
 import paho.mqtt.client as mqtt
+import numpy as np
+import pickle
+from tensorflow import keras
 
 # ====== 配置信息 (需与 ESP32 代码一致) ======
 MQTT_BROKER = "bemfa.com"
 MQTT_PORT = 9501
 # 巴法云使用私钥作为 ClientID
-MQTT_CLIENT_ID = "84810b9b5f5245fdbc1e1738837f27a9" 
+MQTT_CLIENT_ID = "84810b9b5f5245fdbc1e1738837f27a9"
 # 订阅的主题
 MQTT_TOPIC = "sensor"
+
+# 模型目录（与训练脚本一致）
+MODEL_DIR = "models"
+
+
+def load_predictor(model_dir=MODEL_DIR):
+    """加载 config、模型与 scaler，返回 (model, scaler, sequence_length)"""
+    config_path = os.path.join(model_dir, "config.pkl")
+    if not os.path.exists(config_path):
+        raise FileNotFoundError(f"找不到配置文件: {config_path}")
+
+    with open(config_path, 'rb') as f:
+        config = pickle.load(f)
+
+    model_path = config.get('model_path')
+    scaler_path = config.get('scaler_path')
+    sequence_length = config.get('sequence_length', 60)
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError(f"找不到模型文件: {model_path}")
+    if not os.path.exists(scaler_path):
+        raise FileNotFoundError(f"找不到 scaler 文件: {scaler_path}")
+
+    model = keras.models.load_model(model_path)
+    with open(scaler_path, 'rb') as f:
+        scaler = pickle.load(f)
+
+    print(f"已加载模型: {model_path}")
+    print(f"已加载 scaler: {scaler_path}")
+
+    return model, scaler, sequence_length
+
+
+# 载入模型与 scaler，准备缓冲区
+try:
+    MODEL, SCALER, SEQ_LEN = load_predictor()
+except Exception as e:
+    print(f"加载模型失败: {e}")
+    MODEL = None
+    SCALER = None
+    SEQ_LEN = 60
+
+# 温度缓冲区（只保存用于模型的温度值）
+temp_buffer = deque(maxlen=SEQ_LEN)
+
 
 def on_connect(client, userdata, flags, rc):
     """连接成功的回调函数"""
@@ -17,50 +68,77 @@ def on_connect(client, userdata, flags, rc):
     else:
         print(f"连接失败，错误码: {rc}")
 
+
+def process_and_predict():
+    """当缓冲区满时调用模型进行预测并打印概率"""
+    if MODEL is None or SCALER is None:
+        print("模型或 scaler 未加载，无法预测")
+        return
+
+    if len(temp_buffer) < SEQ_LEN:
+        return
+
+    seq = np.array(list(temp_buffer)).reshape(-1, 1)
+    seq_scaled = SCALER.transform(seq)
+    seq_scaled = seq_scaled.reshape(1, SEQ_LEN, 1)
+
+    prob = float(MODEL.predict(seq_scaled, verbose=0)[0][0])
+    level = "高风险" if prob >= 0.5 else "低风险"
+    print(f"预测热失控概率: {prob:.2%} -> {level}")
+
+
 def on_message(client, userdata, msg):
-    """收到消息的回调函数"""
+    """收到消息的回调函数，解析并用于预测"""
     try:
-        # 解析收到的 JSON 字符串
         payload = msg.payload.decode('utf-8')
         data = json.loads(payload)
-        
-        # 打印解析后的数据
+
+        ts = data.get('timestamp_ms')
+        temp_ambient = data.get('temp_ambient_c')
+        temp_internal = data.get('temp_internal_c')
+
+        # 选择用于预测的温度：优先使用内部温度，否则使用环境温度，否则平均
+        if temp_internal is not None:
+            value = float(temp_internal)
+        elif temp_ambient is not None:
+            value = float(temp_ambient)
+        else:
+            print("收到数据但缺少温度字段，跳过")
+            return
+
+        temp_buffer.append(value)
+
         print("\n--- 收到传感器数据 ---")
-        print(f"时间戳: {data.get('timestamp_ms')} ms")
-        print(f"环境温度: {data.get('temp_ambient_c')} °C")
-        print(f"内部温度: {data.get('temp_internal_c')} °C")
-        print(f"环境湿度: {data.get('humidity_percent')} %")
-        print(f"MQ2(烟雾): {data.get('mq2_ppm')} ppm")
-        print(f"MQ4(甲烷): {data.get('mq4_ppm')} ppm")
-        print(f"MQ8(氢气): {data.get('mq8_ppm')} ppm")
-        print(f"MQ7(一氧化碳): {data.get('mq7_ppm')} ppm")
-        print(f"VOC 指数: {data.get('voc_index')}")
-        print(f"系统状态: {data.get('status')}")
-        
+        print(f"时间戳: {ts} ms")
+        print(f"内部温度: {temp_internal} °C | 环境温度: {temp_ambient} °C")
+        print(f"缓冲区: {len(temp_buffer)}/{SEQ_LEN}")
+
+        # 当缓冲区填满时进行预测
+        if len(temp_buffer) == SEQ_LEN:
+            process_and_predict()
+
     except json.JSONDecodeError:
         print(f"收到非 JSON 格式消息: {msg.payload.decode('utf-8')}")
     except Exception as e:
         print(f"处理消息时出错: {e}")
 
+
 def start_mqtt_listener():
     """启动 MQTT 监听主函数"""
-    # 适配 paho-mqtt 2.0+ 版本，必须指定 CallbackAPIVersion
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, client_id=MQTT_CLIENT_ID)
-    
-    # 设置回调函数
     client.on_connect = on_connect
     client.on_message = on_message
 
     print(f"正在尝试连接到 {MQTT_BROKER}...")
     try:
         client.connect(MQTT_BROKER, MQTT_PORT, 60)
-        # loop_forever() 会阻塞进程，持续处理网络循环、自动重连等
         client.loop_forever()
     except KeyboardInterrupt:
         print("\n程序已手动停止")
         client.disconnect()
     except Exception as e:
         print(f"发生异常: {e}")
+
 
 if __name__ == "__main__":
     start_mqtt_listener()
