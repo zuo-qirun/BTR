@@ -56,8 +56,8 @@ constexpr char kMqttSubTopic[] = "statue"; // 按需求拼写
 
 // ====== 阈值（常量） ======
 // 阈值使用常量定义，便于统一修改。
-constexpr float kTempAmbientWarnC = 35.0f;
-constexpr float kTempInternalWarnC = 50.0f;
+constexpr float kTempAmbientWarnC = 50.0f;
+constexpr float kTempInternalWarnC = 60.0f;
 constexpr float kHumidityWarnPercent = 80.0f;
 constexpr float kMq2WarnPpm = 100.0f;
 constexpr float kMq4WarnPpm = 100.0f;

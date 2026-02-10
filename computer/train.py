@@ -83,7 +83,7 @@ def process_and_predict():
     seq_scaled = seq_scaled.reshape(1, SEQ_LEN, 1)
 
     prob = float(MODEL.predict(seq_scaled, verbose=0)[0][0])
-    level = "高风险" if prob >= 0.5 else "低风险"
+    level = "高风险" if prob >= 0.3 else "低风险"  # 降低阈值到0.3
     print(f"预测热失控概率: {prob:.2%} -> {level}")
 
 

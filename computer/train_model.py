@@ -29,8 +29,9 @@ BATCH_SIZE = 128
 EPOCHS = 30
 LEARNING_RATE = 0.001
 NORMAL_SAMPLE_STRIDE = 30  # 正常数据采样步长（每30个取一个）
-EXCEPTION_SAMPLE_STRIDE = 10  # 异常数据采样步长（每10个取一个）
+EXCEPTION_SAMPLE_STRIDE = 5  # 异常数据采样步长（每5个取一个，增加异常样本）
 SAMPLE_STRIDE = 10  # 采样步长（每隔N个样本取一个）
+CLASS_WEIGHT = {0: 1.0, 1: 50.0}  # 类别权重：热失控样本权重提高50倍
 
 class BatteryThermalRunawayPredictor:
     """电池热失控预测器"""
@@ -199,6 +200,7 @@ class BatteryThermalRunawayPredictor:
             epochs=EPOCHS,
             validation_data=(X_test, y_test),
             callbacks=callbacks,
+            class_weight=CLASS_WEIGHT,  # 添加类别权重
             verbose=1
         )
         
@@ -218,7 +220,7 @@ class BatteryThermalRunawayPredictor:
         
         # 预测
         y_pred_prob = self.model.predict(X_test)
-        y_pred = (y_pred_prob > 0.5).astype(int)
+        y_pred = (y_pred_prob > 0.3).astype(int)  # 降低阈值到0.3以提高召回率
         
         # 混淆矩阵
         from sklearn.metrics import confusion_matrix, classification_report
