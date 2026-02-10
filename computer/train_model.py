@@ -24,13 +24,12 @@ plt.rcParams['axes.unicode_minus'] = False
 DATA_DIR = "data"  # 数据目录
 MODEL_DIR = "models"  # 模型保存目录
 SEQUENCE_LENGTH = 60  # 时间序列长度（使用过去30秒的数据，每0.5秒一个点）
-PREDICTION_HORIZON = 40  # 预测未来10秒（20个时间步）
+PREDICTION_HORIZON = 40  # 预测未来20秒（40个时间步）
 BATCH_SIZE = 128
 EPOCHS = 30
 LEARNING_RATE = 0.001
-NORMAL_SAMPLE_STRIDE = 30  # 正常数据采样步长（每30个取一个）
-EXCEPTION_SAMPLE_STRIDE = 5  # 异常数据采样步长（每5个取一个，增加异常样本）
-SAMPLE_STRIDE = 10  # 采样步长（每隔N个样本取一个）
+TIME_INTERVAL = 0.5  # 重采样时间间隔（秒）- 统一为0.5秒
+MAX_GAP = 70.0  # 最大允许的原始数据时间间隔（秒），超过此值跳过该区间
 CLASS_WEIGHT = {0: 1.0, 1: 50.0}  # 类别权重：热失控样本权重提高50倍
 
 class BatteryThermalRunawayPredictor:
@@ -44,8 +43,9 @@ class BatteryThermalRunawayPredictor:
         self.history = None
         
     def load_data(self, data_dir):
-        """加载所有CSV数据文件"""
+        """加载所有CSV数据文件，统一使用0.5秒间隔重采样"""
         print("正在加载数据...")
+        print(f"重采样间隔: {TIME_INTERVAL}秒")
         
         all_sequences = []
         all_labels = []
@@ -63,28 +63,67 @@ class BatteryThermalRunawayPredictor:
                 df = pd.read_csv(csv_file)
                 
                 # 确保数据按时间排序
-                df = df.sort_values('Time')
+                df = df.sort_values('Time').reset_index(drop=True)
                 
-                # 提取温度数据
-                temperatures = df['Temperature'].values
+                # 基于时间的重采样：使用线性插值生成等间隔时间序列
+                time_values = df['Time'].values
+                temp_values = df['Temperature'].values
                 
-                # 根据文件类型选择采样步长
-                sample_stride = EXCEPTION_SAMPLE_STRIDE if is_exception else NORMAL_SAMPLE_STRIDE
+                # 检查原始数据的时间间隔
+                time_diffs = np.diff(time_values)
+                max_gap = np.max(time_diffs)
+                avg_gap = np.mean(time_diffs)
                 
-                # 创建时间序列样本（简单采样：每隔sample_stride个取一个）
-                max_sequences = len(temperatures) - self.sequence_length - self.prediction_horizon
+                # 创建等间隔时间点（统一为0.5秒）
+                start_time = time_values[0]
+                end_time = time_values[-1]
+                uniform_times = np.arange(start_time, end_time, TIME_INTERVAL)
+                
+                # 线性插值（正常文件从5秒插值到0.5秒，异常文件从0.02秒降采样到0.5秒）
+                uniform_temps = np.interp(uniform_times, time_values, temp_values)
+                
+                # 标记哪些插值点是不可靠的（原始数据间隔过大，如60秒）
+                valid_mask = np.ones(len(uniform_temps), dtype=bool)
+                if max_gap > MAX_GAP:
+                    for i, t in enumerate(uniform_times):
+                        # 找到 t 所在的原始数据区间
+                        idx = np.searchsorted(time_values, t)
+                        if idx > 0 and idx < len(time_values):
+                            gap = time_values[idx] - time_values[idx-1]
+                            if gap > MAX_GAP:
+                                valid_mask[i] = False
+                
+                # 创建时间序列样本
+                max_sequences = len(uniform_temps) - self.sequence_length - self.prediction_horizon
                 
                 if max_sequences <= 0:
-                    print(f"  ⚠️  数据点不足，跳过")
+                    print(f"  ⚠️  {os.path.basename(csv_file)} 数据点不足，跳过")
                     continue
                 
-                # 简单采样策略：根据文件类型使用不同步长
+                # 对正常文件进行随机采样，减少数据量但保持多样性
+                if is_exception:
+                    # 异常文件：使用所有点（保留热失控细节）
+                    sample_indices = range(max_sequences)
+                else:
+                    # 正常文件：随机采样10%的序列（减少数据量但保持连续性）
+                    sample_ratio = 0.1  # 采样10%
+                    num_samples = max(int(max_sequences * sample_ratio), 100)  # 至少100个样本
+                    num_samples = min(num_samples, max_sequences)
+                    sample_indices = np.random.choice(max_sequences, num_samples, replace=False)
+                    sample_indices = sorted(sample_indices)  # 排序以保持时间顺序
+                
                 sample_count = 0
-                for i in range(0, max_sequences, sample_stride):
+                skipped_count = 0
+                for i in sample_indices:
+                    # 检查这个序列是否包含不可靠的插值点
+                    sequence_mask = valid_mask[i:i + self.sequence_length + self.prediction_horizon]
+                    if not np.all(sequence_mask):
+                        skipped_count += 1
+                        continue  # 跳过包含超大间隔的序列
                         
-                    sequence = temperatures[i:i + self.sequence_length]
+                    sequence = uniform_temps[i:i + self.sequence_length]
                     # 检查未来是否会发生热失控
-                    future_temps = temperatures[i + self.sequence_length:i + self.sequence_length + self.prediction_horizon]
+                    future_temps = uniform_temps[i + self.sequence_length:i + self.sequence_length + self.prediction_horizon]
                     
                     # 如果是异常文件，且未来温度急剧上升，标记为热失控
                     if is_exception:
@@ -98,7 +137,8 @@ class BatteryThermalRunawayPredictor:
                     all_labels.append(label)
                     sample_count += 1
                 
-                print(f"已加载: {os.path.basename(csv_file)} - {'异常' if is_exception else '正常'} - {len(temperatures)} 个数据点 (采样 {sample_count} 个样本)")
+                skip_info = f" (跳过{skipped_count}个大间隔序列)" if skipped_count > 0 else ""
+                print(f"已加载: {os.path.basename(csv_file)} - {'异常' if is_exception else '正常'} - 原始{len(temp_values)}点 → 重采样{len(uniform_temps)}点 → {sample_count}个序列{skip_info}")
                 
             except Exception as e:
                 print(f"加载文件 {csv_file} 时出错: {e}")
@@ -223,12 +263,35 @@ class BatteryThermalRunawayPredictor:
         y_pred = (y_pred_prob > 0.3).astype(int)  # 降低阈值到0.3以提高召回率
         
         # 混淆矩阵
-        from sklearn.metrics import confusion_matrix, classification_report
+        from sklearn.metrics import confusion_matrix, classification_report, f1_score, roc_auc_score
         cm = confusion_matrix(y_test, y_pred)
         print("\n混淆矩阵:")
         print(cm)
         print("\n分类报告:")
         print(classification_report(y_test, y_pred, target_names=['正常', '热失控']))
+        
+        # 额外指标
+        f1 = f1_score(y_test, y_pred)
+        try:
+            auc = roc_auc_score(y_test, y_pred_prob)
+            print(f"\n额外指标:")
+            print(f"F1-Score: {f1:.4f}")
+            print(f"AUC-ROC: {auc:.4f}")
+        except:
+            print(f"\n额外指标:")
+            print(f"F1-Score: {f1:.4f}")
+        
+        # 分析不同阈值下的性能
+        print("\n不同阈值下的召回率和精确率:")
+        for threshold in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7]:
+            y_pred_thresh = (y_pred_prob > threshold).astype(int)
+            from sklearn.metrics import precision_score, recall_score
+            precision = precision_score(y_test, y_pred_thresh, zero_division=0)
+            recall = recall_score(y_test, y_pred_thresh, zero_division=0)
+            print(f"  阈值={threshold:.1f}: Precision={precision:.4f}, Recall={recall:.4f}")
+        
+        print(f"\n推荐阈值: 0.3 (当前使用)")
+        print(f"说明: 对于热失控预警，优先保证高召回率（不漏报），可接受一定误报")
         
         return results
     

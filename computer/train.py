@@ -57,7 +57,10 @@ except Exception as e:
     SEQ_LEN = 60
 
 # 温度缓冲区（只保存用于模型的温度值）
+# 注意：假设 MQTT 数据以固定间隔（约0.5秒）到达
+# 如果实际间隔不均匀，需要添加时间戳检查和插值逻辑
 temp_buffer = deque(maxlen=SEQ_LEN)
+time_buffer = deque(maxlen=SEQ_LEN)  # 存储时间戳用于检查间隔
 
 
 def on_connect(client, userdata, flags, rc):
@@ -97,7 +100,7 @@ def on_message(client, userdata, msg):
         temp_ambient = data.get('temp_ambient_c')
         temp_internal = data.get('temp_internal_c')
 
-        # 选择用于预测的温度：优先使用内部温度，否则使用环境温度，否则平均
+        # 选择用于预测的温度：优先使用内部温度，否则使用环境温度
         if temp_internal is not None:
             value = float(temp_internal)
         elif temp_ambient is not None:
@@ -106,12 +109,20 @@ def on_message(client, userdata, msg):
             print("收到数据但缺少温度字段，跳过")
             return
 
+        # 添加到缓冲区
         temp_buffer.append(value)
+        if ts is not None:
+            time_buffer.append(ts / 1000.0)  # 转换为秒
 
         print("\n--- 收到传感器数据 ---")
         print(f"时间戳: {ts} ms")
         print(f"内部温度: {temp_internal} °C | 环境温度: {temp_ambient} °C")
         print(f"缓冲区: {len(temp_buffer)}/{SEQ_LEN}")
+        
+        # 检查时间间隔是否均匀（可选）
+        if len(time_buffer) >= 2:
+            avg_interval = (time_buffer[-1] - time_buffer[0]) / (len(time_buffer) - 1)
+            print(f"平均时间间隔: {avg_interval:.2f}秒")
 
         # 当缓冲区填满时进行预测
         if len(temp_buffer) == SEQ_LEN:
