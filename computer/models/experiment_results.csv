@@ -1,0 +1,3 @@
+exp_name,class_weight,val_loss,val_accuracy,precision,recall,f1,auc,trained_date,model_path
+exp_1_w5_20260211_030213,{0: 1.0, 1: 5.0},0.129851,0.937551,0.356381,0.774583,0.488161,0.92236539439518,2026-02-11 03:06:12,D:\Desktop\Zhao_zzZ\BTR\computer\models\exp_1_w5_20260211_030213\thermal_runaway_model.h5
+exp_2_w10_20260211_030612,{0: 1.0, 1: 10.0},0.165941,0.938798,0.367955,0.847866,0.513195,0.9378106135810514,2026-02-11 03:10:03,D:\Desktop\Zhao_zzZ\BTR\computer\models\exp_2_w10_20260211_030612\thermal_runaway_model.h5
