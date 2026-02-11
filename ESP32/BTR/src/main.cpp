@@ -44,10 +44,21 @@ constexpr uint8_t kOledReset = 255; // no reset pin
 constexpr uint32_t kSampleIntervalMs = 500; // 2Hz
 constexpr uint8_t kHistoryLength = 20;      // 10s * 2Hz
 
+// ====== WiFi 配置 ======
+// 支持多个 WiFi 网络，按顺序尝试连接
+struct WiFiCredential {
+  const char* ssid;
+  const char* password;
+};
+
+constexpr WiFiCredential kWifiNetworks[] = {
+  {"blackmi", "wxy358800"},
+  {"点击确认父子关系", "12345678"}
+};
+constexpr uint8_t kWifiNetworkCount = sizeof(kWifiNetworks) / sizeof(kWifiNetworks[0]);
+
 // ====== MQTT 配置 ======
 // MQTT 服务器：bemfa.com:9501，发布 topic 为 sensor，订阅 topic 为 statue。
-constexpr char kWifiSsid[] = "blackmi";
-constexpr char kWifiPassword[] = "wxy358800";
 constexpr char kMqttHost[] = "bemfa.com";
 constexpr uint16_t kMqttPort = 9501;
 constexpr char kMqttPrivateKey[] = "84810b9b5f5245fdbc1e1738837f27a9";
@@ -492,6 +503,41 @@ void PrintSensorData(uint32_t nowMs) {
   Serial.println(StatusToString(effectiveStatus));
 }
 
+// 尝试连接多个 WiFi 网络，返回是否成功连接
+bool ConnectToWiFi() {
+  WiFi.mode(WIFI_STA);
+  
+  for (uint8_t i = 0; i < kWifiNetworkCount; ++i) {
+    Serial.print("Trying WiFi: ");
+    Serial.println(kWifiNetworks[i].ssid);
+    
+    WiFi.begin(kWifiNetworks[i].ssid, kWifiNetworks[i].password);
+    
+    // 尝试连接 10 秒
+    uint8_t attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      Serial.print(".");
+      delay(500);
+      attempts++;
+    }
+    
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.println();
+      Serial.print("Connected to: ");
+      Serial.println(kWifiNetworks[i].ssid);
+      Serial.print("IP: ");
+      Serial.println(WiFi.localIP());
+      return true;
+    }
+    
+    Serial.println(" Failed");
+    WiFi.disconnect();
+  }
+  
+  Serial.println("All WiFi networks failed");
+  return false;
+}
+
 // 初始化硬件、网络和显示。
 } // namespace
 
@@ -535,13 +581,10 @@ void setup() {
     max30105.setup();
   }
 
-  // 连接 Wi-Fi（阻塞式等待连接成功）。
-  WiFi.mode(WIFI_STA);
-  Serial.println("Connecting WiFi");
-  WiFi.begin(kWifiSsid, kWifiPassword);
-  while (WiFi.status() != WL_CONNECTED) {
-    Serial.print(".");
-    delay(500);
+  // 连接 Wi-Fi（尝试多个网络）。
+  if (!ConnectToWiFi()) {
+    Serial.println("WiFi connection failed, continuing without network...");
+    // 可以选择进入离线模式或重启设备
   }
 
   // MQTT 配置并连接。
@@ -555,6 +598,13 @@ void setup() {
 // 主循环：采样、状态计算、显示、MQTT 与蜂鸣器控制。
 void loop() {
   const uint32_t nowMs = millis();
+  
+  // 检查 WiFi 连接状态，断线重连
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi disconnected, reconnecting...");
+    ConnectToWiFi();
+  }
+  
   mqttClient.loop();
 
   if (!mqttClient.connected()) {
