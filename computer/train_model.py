@@ -21,31 +21,17 @@ plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
 # ====== 配置参数 ======
-# 路径基于当前脚本目录，确保从仓库根或其它位置运行时能找到 data 和 models 文件夹
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-DATA_DIR = os.path.join(BASE_DIR, "data")  # 数据目录
-MODEL_DIR = os.path.join(BASE_DIR, "models")  # 模型保存目录
+DATA_DIR = "data"  # 数据目录
+MODEL_DIR = "models"  # 模型保存目录
 SEQUENCE_LENGTH = 60  # 时间序列长度（使用过去30秒的数据，每0.5秒一个点）
 PREDICTION_HORIZON = 40  # 预测未来20秒（40个时间步）
-BATCH_SIZE = 128
-EPOCHS = 2
+BATCH_SIZE = 16
+EPOCHS = 100
 # 初始学习率，训练过程中使用 ReduceLROnPlateau 自适应调整学习率
 INITIAL_LEARNING_RATE = 0.001
 TIME_INTERVAL = 0.5  # 重采样时间间隔（秒）- 统一为0.5秒
 MAX_GAP = 70.0  # 最大允许的原始数据时间间隔（秒），超过此值跳过该区间
 CLASS_WEIGHT = {0: 1.0, 1: 50.0}  # 类别权重：热失控样本权重提高50倍
-# 实验配置：多个候选类别权重（默认列表）
-CLASS_WEIGHT_LIST = [
-    {0: 1.0, 1: 5.0},
-    {0: 1.0, 1: 10.0},
-    {0: 1.0, 1: 20.0},
-    {0: 1.0, 1: 50.0},
-    {0: 1.0, 1: 100.0},
-]
-# 是否为每次试验保存完整模型
-SAVE_MODELS_PER_EXPERIMENT = True
-# 目标 GPU 名称中包含的子串（用于选择特定 GPU，例如 '5060'）
-GPU_NAME_SUBSTR = '5060'
 
 class BatteryThermalRunawayPredictor:
     """电池热失控预测器"""
@@ -455,135 +441,49 @@ class BatteryThermalRunawayPredictor:
         return risk_prob
 
 
-def select_gpu_by_name(substr=GPU_NAME_SUBSTR):
-    """尝试选择名称包含给定子串的 GPU 并限制 TensorFlow 仅使用它。"""
-    try:
-        gpus = tf.config.list_physical_devices('GPU')
-        if not gpus:
-            print("未检测到 GPU，使用 CPU 运行。")
-            return None
-
-        selected = None
-        for gpu in gpus:
-            # 物理设备对象名可能包含信息，尝试匹配子串
-            if substr in gpu.name or substr in str(gpu):
-                selected = gpu
-                break
-
-        if selected is None:
-            # 未找到匹配项，默认使用第0个
-            selected = gpus[0]
-            print(f"未找到名称含 '{substr}' 的 GPU，使用第一块 GPU: {selected}")
-        else:
-            print(f"选择 GPU: {selected}")
-
-        tf.config.set_visible_devices(selected, 'GPU')
-        tf.config.experimental.set_memory_growth(selected, True)
-        return selected
-    except Exception as e:
-        print(f"设置 GPU 时出错: {e}\n将使用默认设备。")
-        return None
-
-
-def run_experiments():
-    """按 `CLASS_WEIGHT_LIST` 顺序运行多个试验，保存模型和汇总结果到 CSV。"""
-    # 选择 GPU（如果可用）
-    select_gpu_by_name()
-
-    # 加载数据一次，供所有试验复用
-    predictor = BatteryThermalRunawayPredictor(
-        sequence_length=SEQUENCE_LENGTH,
-        prediction_horizon=PREDICTION_HORIZON
-    )
-    X, y = predictor.load_data(DATA_DIR)
-    if X.size == 0 or len(X) == 0:
-        print("\n未找到可用样本 (数据集为空)。请将 CSV 数据放到 data 目录或检查数据加载逻辑。实验已中止。")
-        return
-    X_train, X_test, y_train, y_test = predictor.preprocess_data(X, y)
-
-    # 结果 CSV
-    os.makedirs(MODEL_DIR, exist_ok=True)
-    results_csv = os.path.join(MODEL_DIR, 'experiment_results.csv')
-    if not os.path.exists(results_csv):
-        with open(results_csv, 'w') as f:
-            f.write('exp_name,class_weight,val_loss,val_accuracy,precision,recall,f1,auc,trained_date,model_path\n')
-
-    for idx, cw in enumerate(CLASS_WEIGHT_LIST, start=1):
-        exp_name = f'exp_{idx}_w{int(list(cw.values())[1])}_{datetime.now().strftime("%Y%m%d_%H%M%S")}'
-        print('\n' + '='*60)
-        print(f"开始试验: {exp_name} - class_weight={cw}")
-
-        # 构建并训练新模型实例
-        predictor = BatteryThermalRunawayPredictor(
-            sequence_length=SEQUENCE_LENGTH,
-            prediction_horizon=PREDICTION_HORIZON
-        )
-        predictor.build_model(input_shape=(SEQUENCE_LENGTH, 1))
-
-        # 训练时传入当前权重
-        predictor.history = predictor.model.fit(
-            X_train, y_train,
-            batch_size=BATCH_SIZE,
-            epochs=EPOCHS,
-            validation_data=(X_test, y_test),
-            callbacks=[
-                keras.callbacks.EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True),
-                keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-7, verbose=1)
-            ],
-            class_weight=cw,
-            verbose=1
-        )
-
-        # 评估
-        results = predictor.model.evaluate(X_test, y_test, verbose=0)
-        y_pred_prob = predictor.model.predict(X_test)
-        y_pred = (y_pred_prob > 0.3).astype(int)
-        from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_score
-        precision = precision_score(y_test, y_pred, zero_division=0)
-        recall = recall_score(y_test, y_pred, zero_division=0)
-        f1 = f1_score(y_test, y_pred, zero_division=0)
-        try:
-            auc = roc_auc_score(y_test, y_pred_prob)
-        except:
-            auc = ''
-
-        model_path = ''
-        if SAVE_MODELS_PER_EXPERIMENT:
-            exp_dir = os.path.join(MODEL_DIR, exp_name)
-            os.makedirs(exp_dir, exist_ok=True)
-            model_path = os.path.join(exp_dir, 'thermal_runaway_model.h5')
-            predictor.model.save(model_path)
-            # 保存 scaler
-            scaler_path = os.path.join(exp_dir, 'scaler.pkl')
-            with open(scaler_path, 'wb') as f:
-                pickle.dump(predictor.scaler, f)
-            # 保存 config
-            config = {
-                'sequence_length': predictor.sequence_length,
-                'prediction_horizon': predictor.prediction_horizon,
-                'class_weight': cw,
-                'model_path': model_path,
-                'scaler_path': scaler_path,
-                'trained_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            }
-            with open(os.path.join(exp_dir, 'config.pkl'), 'wb') as f:
-                pickle.dump(config, f)
-
-        # 写入结果 CSV
-        with open(results_csv, 'a') as f:
-            f.write(f"{exp_name},{cw},{results[0]:.6f},{results[1]:.6f},{precision:.6f},{recall:.6f},{f1:.6f},{auc},{datetime.now().strftime('%Y-%m-%d %H:%M:%S')},{model_path}\n")
-
-        print(f"试验 {exp_name} 完成: val_loss={results[0]:.6f}, val_acc={results[1]:.6f}, precision={precision:.4f}, recall={recall:.4f}, f1={f1:.4f}, auc={auc}")
-
-
-
 def main():
     """主函数"""
     print("=" * 60)
     print("电池热失控预测模型训练")
     print("=" * 60)
-    # 运行批量实验（每个 class_weight 在 CLASS_WEIGHT_LIST 中）
-    run_experiments()
+    
+    # 创建预测器
+    predictor = BatteryThermalRunawayPredictor(
+        sequence_length=SEQUENCE_LENGTH,
+        prediction_horizon=PREDICTION_HORIZON
+    )
+    
+    # 加载数据
+    X, y = predictor.load_data(DATA_DIR)
+    
+    # 预处理数据
+    X_train, X_test, y_train, y_test = predictor.preprocess_data(X, y)
+    
+    # 构建模型
+    predictor.build_model(input_shape=(SEQUENCE_LENGTH, 1))
+    
+    # 训练模型
+    predictor.train(X_train, y_train, X_test, y_test)
+    
+    # 评估模型
+    predictor.evaluate(X_test, y_test)
+    
+    # 绘制训练历史
+    predictor.plot_training_history()
+    
+    # 保存模型
+    predictor.save_model()
+    
+    print("\n" + "=" * 60)
+    print("训练完成！")
+    print("=" * 60)
+    
+    # 测试预测
+    print("\n测试实时预测功能...")
+    test_sequence = X_test[0].flatten()
+    risk = predictor.predict(test_sequence)
+    print(f"测试样本热失控风险: {risk:.2%}")
+    print(f"实际标签: {'热失控' if y_test[0] == 1 else '正常'}")
 
 
 if __name__ == "__main__":
