@@ -67,7 +67,7 @@ constexpr char kMqttSubTopic[] = "statue"; // 按需求拼写
 
 // ====== 阈值（常量） ======
 // 阈值使用常量定义，便于统一修改。
-constexpr float kTempAmbientWarnC = 35.0f;
+constexpr float kTempAmbientWarnC = 50.0f;
 constexpr float kTempInternalWarnC = 50.0f;
 constexpr float kHumidityWarnPercent = 80.0f;
 constexpr float kMq2WarnPpm = 100.0f;
@@ -75,6 +75,10 @@ constexpr float kMq4WarnPpm = 100.0f;
 constexpr float kMq8WarnPpm = 200.0f;
 constexpr float kMq7WarnPpm = 500.0f;
 constexpr float kVocIndexWarn = 200.0f;
+
+// MAX30105 阈值：烟雾、温度
+constexpr uint32_t kMax30105SmokeWarn = 750;   // 烟雾浓度阈值（IR值）
+constexpr float kMax30105TempWarnC = 50.0f;       // MAX30105温度阈值
 
 // MQ 传感器转换比例（简化线性换算）
 // 未做标定曲线时，先用 0~4095 ADC 映射到 0~maxPpm。
@@ -105,7 +109,8 @@ struct SensorSample {
   float mq8Ppm;
   float mq7Ppm;
   float vocIndex;
-  uint32_t max30105Ir;
+  uint32_t max30105Smoke;    // 烟雾浓度（IR）
+  float max30105TempC;       // MAX30105温度
 };
 
 SensorSample history[kHistoryLength] = {};
@@ -135,7 +140,10 @@ float lastMq4Ppm = 0.0f;
 float lastMq8Ppm = 0.0f;
 float lastMq7Ppm = 0.0f;
 float lastVocIndex = 0.0f;
-uint32_t lastMax30105Ir = 0;
+
+// MAX30105 传感器数据：烟雾（IR）、温度
+uint32_t lastMax30105Smoke = 0;      // 烟雾浓度（红外值）
+float lastMax30105TempC = 0.0f;      // MAX30105温度
 
 // MQ 传感器 ADC 读数转换为 ppm（简化线性模型）。
 float ConvertMqToPpm(int adc, float maxPpm) {
@@ -146,9 +154,9 @@ float ConvertMqToPpm(int adc, float maxPpm) {
 // 统计超过阈值的传感器数量，以划分正常/可疑/紧急三种情况。
 StatusLevel EvaluateStatus() {
   int exceedCount = 0;
-  // if (lastTempAmbientC > kTempAmbientWarnC) {
-  //   exceedCount++;
-  // }
+  if (lastTempAmbientC > kTempAmbientWarnC) {
+    exceedCount++;
+  }
   if (lastTempInternalC > kTempInternalWarnC) {
     exceedCount++;
   }
@@ -168,6 +176,13 @@ StatusLevel EvaluateStatus() {
     exceedCount++;
   }
   if (lastVocIndex < kVocIndexWarn) {
+    exceedCount++;
+  }
+  // MAX30105 检测：烟雾、温度
+  if (lastMax30105Smoke > kMax30105SmokeWarn) {
+    exceedCount++;
+  }
+  if (lastMax30105TempC > kMax30105TempWarnC) {
     exceedCount++;
   }
 
@@ -263,7 +278,8 @@ void PushHistory(uint32_t nowMs) {
   sample.mq8Ppm = lastMq8Ppm;
   sample.mq7Ppm = lastMq7Ppm;
   sample.vocIndex = lastVocIndex;
-  sample.max30105Ir = lastMax30105Ir;
+  sample.max30105Smoke = lastMax30105Smoke;
+  sample.max30105TempC = lastMax30105TempC;
 
   historyIndex = (historyIndex + 1) % kHistoryLength;
   if (historyCount < kHistoryLength) {
@@ -336,7 +352,7 @@ void DrawGasScreen() {
   display.display();
 }
 
-// OLED 界面 4：显示 VOC 指数和 MAX30105 IR 原始值。
+// OLED 界面 4：显示 VOC 指数。
 void DrawVocScreen() {
   display.clearDisplay();
   display.setTextSize(1);
@@ -348,8 +364,24 @@ void DrawVocScreen() {
   display.print(lastVocIndex, 0);
   display.setTextSize(1);
   display.setCursor(0, 50);
-  display.print("MAX30105 IR: ");
-  display.print(lastMax30105Ir);
+  display.print("Air Quality");
+  display.display();
+}
+
+// OLED 界面 5：显示 MAX30105 烟雾、温度检测。
+void DrawMax30105Screen() {
+  display.clearDisplay();
+  display.setTextSize(1);
+  display.setTextColor(SSD1306_WHITE);
+  display.setCursor(0, 0);
+  display.println("MAX30105 Sensor");
+  display.setCursor(0, 20);
+  display.print("Smoke(IR): ");
+  display.println(lastMax30105Smoke);
+  display.setCursor(0, 40);
+  display.print("Temp: ");
+  display.print(lastMax30105TempC, 1);
+  display.println("C");
   display.display();
 }
 
@@ -366,8 +398,11 @@ void UpdateDisplay() {
       DrawGasScreen();
       break;
     case 3:
-    default:
       DrawVocScreen();
+      break;
+    case 4:
+    default:
+      DrawMax30105Screen();
       break;
   }
 }
@@ -434,7 +469,8 @@ void PublishMqtt(uint32_t nowMs) {
   payload += "\"mq8_ppm\":" + String(lastMq8Ppm, 1) + ",";
   payload += "\"mq7_ppm\":" + String(lastMq7Ppm, 1) + ",";
   payload += "\"voc_index\":" + String(lastVocIndex, 1) + ",";
-  payload += "\"max30105_ir\":" + String(lastMax30105Ir) + ",";
+  payload += "\"max30105_smoke\":" + String(lastMax30105Smoke) + ",";
+  payload += "\"max30105_temp_c\":" + String(lastMax30105TempC, 2) + ",";
   payload += "\"status\":\"" + String(StatusToString(effectiveStatus)) + "\"";
   payload += "}";
 
@@ -473,7 +509,9 @@ void ReadSensors(uint32_t nowMs) {
   lastMq8Ppm = ConvertMqToPpm(analogRead(kMq8Pin), kMq8MaxPpm);
   lastMq7Ppm = ConvertMqToPpm(analogRead(kMq7Pin), kMq7MaxPpm);
 
-  lastMax30105Ir = max30105.getIR();
+  // MAX30105 读取：烟雾浓度（IR）、温度
+  lastMax30105Smoke = max30105.getIR();      // 红外光检测烟雾粒子
+  lastMax30105TempC = max30105.readTemperature();  // 读取内置温度传感器
 
   PushHistory(nowMs);
 }
@@ -497,8 +535,10 @@ void PrintSensorData(uint32_t nowMs) {
   Serial.print(lastMq7Ppm, 1);
   Serial.print(", voc_index=");
   Serial.print(lastVocIndex, 1);
-  Serial.print(", max30105_ir=");
-  Serial.print(lastMax30105Ir);
+  Serial.print(", max30105_smoke=");
+  Serial.print(lastMax30105Smoke);
+  Serial.print(", max30105_temp_c=");
+  Serial.print(lastMax30105TempC, 2);
   Serial.print(", status=");
   Serial.println(StatusToString(effectiveStatus));
 }
@@ -627,7 +667,7 @@ void loop() {
   bool buttonPressed = digitalRead(kButtonPin) == HIGH;
   if (buttonPressed && !buttonLatched) {
     buttonLatched = true;
-    screenIndex = (screenIndex + 1) % 4;
+    screenIndex = (screenIndex + 1) % 5;  // 5 个页面循环
     UpdateDisplay();
   } else if (!buttonPressed) {
     buttonLatched = false;

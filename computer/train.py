@@ -35,6 +35,8 @@ def on_message(client, userdata, msg):
         print(f"MQ8(氢气): {data.get('mq8_ppm')} ppm")
         print(f"MQ7(一氧化碳): {data.get('mq7_ppm')} ppm")
         print(f"VOC 指数: {data.get('voc_index')}")
+        print(f"MAX30105 烟雾浓度(IR): {data.get('max30105_smoke')}")
+        print(f"MAX30105 温度: {data.get('max30105_temp_c')} °C")
         print(f"系统状态: {data.get('status')}")
         
     except json.JSONDecodeError:
