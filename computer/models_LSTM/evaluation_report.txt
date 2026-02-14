@@ -1,0 +1,40 @@
+评估模型...
+
+使用默认阈值 (0.3) 的结果:
+Loss: 0.2773
+Accuracy: 0.9474
+Precision: 0.4188
+Recall: 0.9518
+
+使用优化阈值 (0.790) 的混淆矩阵:
+[[26177   816]
+ [   58  1020]]
+
+分类报告:
+              precision    recall  f1-score   support
+
+          正常       1.00      0.97      0.98     26993
+         热失控       0.56      0.95      0.70      1078
+
+    accuracy                           0.97     28071
+   macro avg       0.78      0.96      0.84     28071
+weighted avg       0.98      0.97      0.97     28071
+
+
+AUC-ROC: 0.9877
+
+优化后指标:
+精确率: 0.5556
+召回率: 0.9462
+F1分数: 0.7001
+
+不同阈值下的召回率和精确率:
+  阈值=0.1: Precision=0.0778, Recall=1.0000
+  阈值=0.2: Precision=0.0898, Recall=0.9954
+  阈值=0.3: Precision=0.2594, Recall=0.9647
+  阈值=0.4: Precision=0.3577, Recall=0.9564
+  阈值=0.5: Precision=0.4188, Recall=0.9518
+  阈值=0.6: Precision=0.4728, Recall=0.9508
+  阈值=0.7: Precision=0.5128, Recall=0.9471
+
+训练历史图表已保存到: models\training_history.png

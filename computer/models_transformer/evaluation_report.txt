@@ -1,0 +1,13 @@
+Evaluation Report - Transformer
+Best threshold: 0.600
+Confusion matrix (optimized):
+[[23222  3771]
+ [   55  1023]]
+              precision    recall  f1-score   support
+
+          正常       1.00      0.86      0.92     26993
+         热失控       0.21      0.95      0.35      1078
+
+    accuracy                           0.86     28071
+   macro avg       0.61      0.90      0.64     28071
+weighted avg       0.97      0.86      0.90     28071

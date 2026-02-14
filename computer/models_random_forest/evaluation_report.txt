@@ -1,0 +1,42 @@
+============================================================
+Evaluation Report - RandomForest
+============================================================
+Default threshold (0.5):
+  Accuracy:  0.9960
+  Precision: 0.9201
+  Recall:    0.9824
+  F1:        0.9502
+  AUC-ROC:   0.9998
+
+Confusion matrix (threshold=0.5):
+[[26901    92]
+ [   19  1059]]
+
+Optimized threshold (0.746):
+  Precision: 0.9706
+  Recall:    0.9508
+  F1:        0.9606
+
+Confusion matrix (optimized):
+[[26962    31]
+ [   53  1025]]
+
+Classification Report (optimized):
+              precision    recall  f1-score   support
+
+          正常       1.00      1.00      1.00     26993
+         热失控       0.97      0.95      0.96      1078
+
+    accuracy                           1.00     28071
+   macro avg       0.98      0.97      0.98     28071
+weighted avg       1.00      1.00      1.00     28071
+
+
+Performance at different thresholds:
+  threshold=0.1: Precision=0.7216, Recall=1.0000
+  threshold=0.2: Precision=0.8045, Recall=1.0000
+  threshold=0.3: Precision=0.8604, Recall=0.9944
+  threshold=0.4: Precision=0.8951, Recall=0.9898
+  threshold=0.5: Precision=0.9201, Recall=0.9824
+  threshold=0.6: Precision=0.9351, Recall=0.9750
+  threshold=0.7: Precision=0.9601, Recall=0.9592

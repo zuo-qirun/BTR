@@ -18,7 +18,7 @@ MQTT_TOPIC = "sensor"
 MQTT_STATUS_TOPIC = "statue"
 
 # 模型目录（与训练脚本一致）
-MODEL_DIR = "models"
+MODEL_DIR = "models_LSTM"
 
 
 def load_predictor(model_dir=MODEL_DIR):
