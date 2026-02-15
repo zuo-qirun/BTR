@@ -1,0 +1,13 @@
+Evaluation Report - CNN + LSTM
+Best threshold: 0.640
+Confusion matrix (optimized):
+[[25040  1953]
+ [   55  1023]]
+              precision    recall  f1-score   support
+
+          正常       1.00      0.93      0.96     26993
+         热失控       0.34      0.95      0.50      1078
+
+    accuracy                           0.93     28071
+   macro avg       0.67      0.94      0.73     28071
+weighted avg       0.97      0.93      0.94     28071
