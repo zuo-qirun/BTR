@@ -1,0 +1,13 @@
+Evaluation Report - LSTM (60s prediction)
+Best threshold: 0.790
+Confusion matrix (optimized):
+[[24557  1120]
+ [   24  1773]]
+              precision    recall  f1-score   support
+
+          正常       1.00      0.96      0.98     25677
+         热失控       0.61      0.99      0.76      1797
+
+    accuracy                           0.96     27474
+   macro avg       0.81      0.97      0.87     27474
+weighted avg       0.97      0.96      0.96     27474
